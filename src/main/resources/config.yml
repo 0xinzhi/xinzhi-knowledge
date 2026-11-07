@@ -1,0 +1,57 @@
+# XinZhiKnowledge —— 知识机器
+# 效率 = 机器数 × base-efficiency ÷ 配方 tick
+#   例：配方 2 tick、识别槽里 4 台 ⇒ 每 tick 跑 2 次
+#   例：配方 20 tick、1 台 ⇒ 每 20 tick 跑 1 次
+machine:
+  # 本机存电上限（J）。被识别的机器不耗电时，本机也不耗电。
+  # 电是「按 tick 扣」的（不是攒够一次配方才扣），所以这里只要装得下
+  # 「一台机器干 1 tick 的电」就行；默认给到 20 亿，基本不用改。
+  energy-capacity: 2000000000
+  # 基准效率，1.0 = 一台机器等于原机器的一次产出节奏
+  base-efficiency: 1.0
+  # 一 tick 内最多完成多少次（防止超频机器把服务器顶爆）
+  max-crafts-per-tick: 256
+  # 读不到被识别机器的耗电时按多少 J/tick 算；0 = 视为不耗电
+  # ⚠ 单位是「每 tick」：一次配方的耗电 = 这个值 × 配方 tick 数
+  energy-per-tick-when-unknown: 0
+  # 识别槽多久检查一次（单位：本机 tick）。换机器/换叠数后最多等这么多 tick 才认新配方；
+  # 已经认好的配方照常按原速率跑，不受这个值影响。
+  identify-every-ticks: 4
+  # 已经判定跑不动（缺料/满仓/没电）的机器，隔几个 tick 再重算一次（省 CPU）
+  idle-skip-ticks: 2
+
+scan:
+  # 是否采信扫描层给出的「催化剂/模板不扣料」结论（ConsumeRules）
+  # true  = 模板机（如虚空农场）的模板只用来认配方，不会被扣掉
+  # false = 所有输入都按堆叠数扣（读不准时的保险开关，会吃掉玩家的模板）
+  use-consume-rules: true
+  # 展示配方（getDisplayRecipes）一律不采信 —— 它常常只是展示用，配方不完整
+  # （腐竹 2026-11-07：「无论如何，配方都不能使用展示配方」）
+
+  # 个别机器的配方对象里没有「多久完成一次 / 一次给几个」，只能由服主显式补。
+  # 例：Supreme 的生物科技生成器的配方表只有输入/输出两个数组，
+  #     时间写在机器 tick 逻辑里、产出数量写在它的配置里。
+  #   ticks         = 多少 tick 完成一次（不写 = 用配方自带的）
+  #   output-amount = 一次产出多少个（不写 = 用配方自带的）
+  #   mode          = generator（输入只用来认配方、机器不扣）| recipe（强制当配方机）| 不写 = 自动判
+  #
+  # ⚠ tick 的单位是「一次粘液 tick = 10 游戏 tick = 0.5 秒」。
+  #   30 分钟 = 1800 秒 ÷ 0.5 = 3600。
+  overrides:
+    SUPREME_TECH_GENERATOR:
+      ticks: 3600
+      output-amount: 64
+      mode: generator
+
+power:
+  # 跟随模式的放大倍率：上方真摆着一台发电机时，知识发电机只拿它发电量的这么多倍
+  # （再乘机器格里的台数）。腐竹 2026-11-08：跟随太强势了，按 10% 算。
+  follow-multiplier: 0.1
+  # 接着电网（有导线）时，缓冲满了以后这一 tick 发出来的电要不要也存进虚拟电量。
+  # 电网会不会把这些电取走我们看不到；true = 两边都算（默认，腐竹要「一直发电就要能攒下来」），
+  # false = 电网优先、不再另存（回到「虚拟电量只收没接电网时的溢出」）。
+  virtual-when-on-net: true
+
+machines:
+  # 物品 id 前缀，改这个会生成新物品（老方块会变成未知方块）
+  item-id-prefix: XZK_

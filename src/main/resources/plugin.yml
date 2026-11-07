@@ -1,0 +1,22 @@
+name: XinZhiKnowledge
+main: net.me.xinzhi.knowledge.XinZhiKnowledge
+version: ${project.version}
+api-version: '1.21'
+author: 0xinzhi
+description: 知识之书机器化：知识合成机（输出优先 / 输入优先）+ 知识生成器
+depend:
+  - Slimefun
+
+commands:
+  xzk:
+    description: 知识机器信息 / 重载配置
+    usage: /xzk [info|reload]
+    permission: xzk.use
+
+permissions:
+  xzk.use:
+    description: 使用 /xzk 查看信息
+    default: true
+  xzk.admin:
+    description: 重载配置、清配方缓存
+    default: op
