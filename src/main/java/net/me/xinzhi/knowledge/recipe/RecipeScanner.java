@@ -42,7 +42,8 @@ public final class RecipeScanner {
     /** 是不是我们已经包装过的配方（概率/抽组/模板）——这些不能再套一层，会丢原有信息 */
     private static boolean isWrapped(MachineRecipe mr) {
         return mr instanceof TemplateRecipe || mr instanceof ChanceRecipe
-                || mr instanceof WeightedRecipe || mr instanceof GroupedRecipe;
+                || mr instanceof WeightedRecipe || mr instanceof GroupedRecipe
+                || mr instanceof CatalystRecipe;
     }
 
     /** 这台机器扫出来的全部配方（含生成器配方）。 */
@@ -222,7 +223,13 @@ public final class RecipeScanner {
                 mr = TemplateRecipe.of(mr.getTicks(), mr.getInput(), mr.getOutput());
             }
             int[] amounts = null;
-            if (neverConsumes || off || forceGenerator || mr instanceof TemplateRecipe) {
+            if (neverConsumes || off || forceGenerator) {
+                ItemStack[] ins = mr.getInput();
+                amounts = new int[ins == null ? 0 : ins.length];
+            } else if (mr instanceof AmountsCarrier ac && ac.consumeAmounts() != null) {
+                // 配方自己带了扣料计划（模板机 = 模板位 0）：照它来，别让默认口径把模板扣掉
+                amounts = ac.consumeAmounts().clone();
+            } else if (mr instanceof TemplateRecipe) {
                 ItemStack[] ins = mr.getInput();
                 amounts = new int[ins == null ? 0 : ins.length];
             } else {

@@ -210,6 +210,14 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
         double eff = cfg == null ? 1.0 : cfg.baseEfficiency();
         int cap = cfg == null ? 256 : cfg.maxCraftsPerTick();
 
+        // 模板机的「模板越多跑得越快」：模板区放 N 个 ⇒ 进度每 tick 走 N 格（RSC fasterIfMoreTemplates）
+        int tplCount = 1;
+        if (chosen.template != null) {
+            ItemKey tk = ItemKey.of(chosen.template);
+            if (tk != null) tplCount = Math.max(1, templates.getOrDefault(tk, 1));
+        }
+        int ticks = chosen.fasterByTemplate ? Math.max(1, chosen.ticks / tplCount) : chosen.ticks;
+
         int bySpace = chosen.uncertainOutput()
                 ? (int) Math.min(Integer.MAX_VALUE, room)   // 每次只出 1 件，空位够就有多少次
                 : Math.max(0, CraftMath.bySpace(menu, outputSlots(), chosen.give));
@@ -237,10 +245,10 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
             consumeCharge(loc, draw);
         }
 
-        int crafts = CraftMath.perTick(st.acc, st.count, eff, chosen.ticks, cap);
+        int crafts = CraftMath.perTick(st.acc, st.count, eff, ticks, cap);
         if (crafts <= 0) {
             if (st.ticks % 10 == 0) {
-                render(menu, "§7蓄力中 §8(" + st.count + "台 / " + chosen.ticks + "tick)");
+                render(menu, "§7蓄力中 §8(" + st.count + "台 / " + ticks + "tick)");
             }
             return;
         }
@@ -251,7 +259,7 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
             return;
         }
         if (st.ticks % 10 == 0) {
-            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + st.count + "台, " + chosen.ticks
+            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + st.count + "台, " + ticks
                     + "tick, 每tick " + draw + " J" + (chosen.energyKnown ? "" : " §c能耗未知") + "§8)"
                     + (st.mixedMachines ? " §c· 附加槽里不是同款机器" : ""));
         }

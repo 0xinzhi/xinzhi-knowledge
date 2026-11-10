@@ -281,6 +281,30 @@ public final class ConsumeRules {
     }
 
     /**
+     * 「这条配方该扣多少」的<b>唯一推荐入口</b>：包装类拿源配方直接算好再带走。
+     *
+     * <p>为什么包装类必须自己算（2026-11-10 卡片序列机）：知识附属的包装
+     * （{@link ChanceRecipe} / {@link GroupedRecipe}）会把配方换成自己的类，
+     * 之后 {@code build} 再调 {@link #consumeAmounts} 时反射看到的是<b>包装类</b>，
+     * 源配方上那些 noConsume 标记一律探不到 ⇒ 不消耗配方被当成要扣料，
+     * 生成器视图里 61 条配方一条都不剩。
+     *
+     * <p>返回 {@code null} = 读不出（调用方继续走自己的默认口径）。
+     */
+    public static int[] amountsFor(MachineRecipe src) {
+        if (src == null) return null;
+        if (src instanceof AmountsCarrier ac) {
+            int[] a = ac.consumeAmounts();
+            if (a != null) return a.clone();
+        }
+        try {
+            return consumeAmounts(src);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
      * RSC 形状的<b>扣料计划</b>：每项的 {@code amount} = 「这种输入本次真正该扣多少」，
      * {@code 0} = 纯催化剂。
      *
@@ -417,6 +441,20 @@ public final class ConsumeRules {
         // ⓪ RSC 形状：「配方有 getInputs()，元素上有 getStack() + getConsumeAmount()」
         Probe plan = probeConsumeAmounts(c);
         if (plan != null) return plan;
+
+        // ⓪.5 旧版 RSC（objects.machine.CustomMachineRecipe）：
+        //     getNoConsume() 返回「不扣料的输入下标」（IntList，按 getInput() 的下标）。
+        //     ⚠ 新版把同名类改成了 wrapper 形状（走 ⓪），那一版的 getNoConsume 是伪值
+        //     （0..n 连续表），所以**只有在没有 getInputs() 时才认**这个 getter。
+        if (findMethod(c, "getInputs") == null) {
+            Method nc = findMethod(c, "getNoConsume");
+            if (nc != null) {
+                Class<?> rt = nc.getReturnType();
+                if (Collection.class.isAssignableFrom(rt) || int[].class == rt) {
+                    return new Probe(ProbeKind.SET_SOURCE, nc);
+                }
+            }
+        }
 
         // ① 逐下标方法（最精确）
         Method m = findMethod(c, "isNoConsumeInput", int.class);

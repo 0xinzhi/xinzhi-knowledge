@@ -13,16 +13,36 @@ import org.bukkit.inventory.ItemStack;
  * <p>⚠ 与 {@link WeightedRecipe} 是两种语义，不能混：
  * 那边是「N 次里抽 1 件」（互斥），这边是「每件各掷一次」（可同时出多件）。
  */
-public final class ChanceRecipe extends MachineRecipe {
+public final class ChanceRecipe extends MachineRecipe implements AmountsCarrier {
 
     private final int[] chances;
     /** true = 掷完只在「掷中的那几件」里随机给 1 件（RSC 的 chooseOneIfHas：「一次产出 1 种」） */
     private final boolean chooseOne;
+    /** 源配方自带的扣料计划（模板机 = 第 0 位 0）；{@code null} = 交给 ConsumeRules 推 */
+    private final int[] amounts;
+
+    /** 源配方（{@link #source()} 用：模板机要回溯到 {@link CatalystRecipe} 才看得到模板倍率） */
+    private final MachineRecipe src;
 
     private ChanceRecipe(MachineRecipe src, int[] chances, boolean chooseOne) {
         super(src.getTicks(), src.getInput(), src.getOutput());
+        this.src = src;
         this.chances = chances;
         this.chooseOne = chooseOne;
+        // ⚠ 必须在这里算（对象还没被本类替换前）：交给 build 的时候 mr 已经是 ChanceRecipe，
+        //    反射探测会看错类 —— RSC 的 noConsume/allnoConsume 从此整层丢失（2026-11-10 卡片序列机）
+        this.amounts = ConsumeRules.amountsFor(src);
+    }
+
+    /** 被包了一层的那条源配方 */
+    public MachineRecipe source() {
+        return src;
+    }
+
+    /** 与 {@link #getInput()} 等长；{@code null} = 没带计划 */
+    @Override
+    public int[] consumeAmounts() {
+        return amounts;
     }
 
     public static ChanceRecipe of(MachineRecipe src, int[] chances, boolean chooseOne) {

@@ -67,6 +67,11 @@ public final class Scan {
     /** 原始配方对象的类名（/xzk dump 诊断用：看清是哪一层把概率吃掉了） */
     public final String rawClass;
 
+    /** 模板机要求的那件模板物品（配方自带、玩家放进模板区）；{@code null} = 不吃模板 */
+    public final ItemStack template;
+    /** 模板区放 N 个 ⇒ 每 tick 走 N 格进度（RSC {@code fasterIfMoreTemplates}） */
+    public final boolean fasterByTemplate;
+
     /** 按权重抽一组的候选组（每组整份给出）；{@code null} = 不是这种配方 */
     public final java.util.List<ItemStack[]> groups;
     /** 与 {@link #groups} 等长的权重 */
@@ -74,6 +79,10 @@ public final class Scan {
 
     public Scan(MachineRecipe raw, int[] amounts, int energyPerTick, boolean energyKnown) {
         this.rawClass = raw.getClass().getSimpleName();
+        // 概率包装会把类型藏起来（ChanceRecipe 只拷了输入/输出/扣料计划），回溯一层源配方
+        MachineRecipe src = raw instanceof ChanceRecipe cr ? cr.source() : raw;
+        this.template = src instanceof CatalystRecipe c ? c.template() : null;
+        this.fasterByTemplate = src instanceof CatalystRecipe c2 && c2.fasterByTemplate();
         this.inputs = raw.getInput() == null ? new ItemStack[0] : raw.getInput();
         this.outputs = raw.getOutput() == null ? new ItemStack[0] : raw.getOutput();
         this.ticks = Math.max(1, readTicks(raw));

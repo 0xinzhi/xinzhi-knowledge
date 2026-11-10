@@ -111,6 +111,15 @@ public final class EnergyProbe {
         if (positive != null) return new Info(positive, true, networked, positive);
         if (sawZero) return new Info(0, true, networked, 0);
 
+        // 「每批耗电」型：RSC 的 CustomMaterialGenerator 用 per（一批要多少焦耳）+ tickRate（几刻一批）
+        if (positive == null && !sawZero) {
+            Integer per = asInt(ReflectUtils.getFieldValueRecursive(sf, "per"));
+            Integer rate = asInt(ReflectUtils.getFieldValueRecursive(sf, "tickRate"));
+            if (per != null && per > 0 && rate != null && rate > 0) {
+                return new Info((int) Math.ceil(per / (double) rate), true, networked, per);
+            }
+        }
+
         // 读不到：按配置兜底，标成「未知」
         Settings s = Settings.get();
         int fallback = s == null ? 0 : s.energyPerTickWhenUnknown();

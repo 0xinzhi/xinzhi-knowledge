@@ -15,15 +15,23 @@ import java.util.List;
  * <p>⚠ 因为源配方 {@code getOutput()} 每次都变，直接读它会把「候选池」当成「全给」——
  * 腐竹 2026-11-08「我用那个机器一次就给了 9 种物品」就是这么来的。
  */
-public final class GroupedRecipe extends MachineRecipe {
+public final class GroupedRecipe extends MachineRecipe implements AmountsCarrier {
 
     private final List<ItemStack[]> groups;
     private final int[] weights;
+    /** 源配方的扣料计划（同 {@link ChanceRecipe}：包装之后反射就看不回源配方了） */
+    private final int[] amounts;
 
     private GroupedRecipe(MachineRecipe src, List<ItemStack[]> groups, int[] weights) {
         super(src.getTicks(), src.getInput(), src.getOutput());
         this.groups = groups;
         this.weights = weights;
+        this.amounts = ConsumeRules.amountsFor(src);
+    }
+
+    @Override
+    public int[] consumeAmounts() {
+        return amounts;
     }
 
     public static GroupedRecipe of(MachineRecipe src, List<ItemStack[]> groups, int[] weights) {

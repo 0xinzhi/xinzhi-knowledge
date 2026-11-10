@@ -7,10 +7,12 @@ import net.me.xinzhi.knowledge.util.RecipeKeys;
 import net.me.xinzhi.knowledge.util.ReflectUtils;
 import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.inventory.meta.ItemMeta;
 
 import java.lang.reflect.Method;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -77,13 +79,18 @@ public final class RecipeExtractor {
             }
         }
 
+        // 配方按「模板物品」分组存放的机器（RSC 27.3 的 CustomTemplateMachine：
+        // 每条配方对象自己不带模板，模板在 MachineTemplate#template，一组共用）⇒ 取组上的模板补进去，
+        // 否则模板机在知识生成器里会退化成「普通配方」，玩家永远不知道该放哪件模板。
         Object tpl = ReflectUtils.getFieldValueRecursive(sf, "templates");
         if (tpl instanceof List<?> list) {
+            boolean faster = boolOf(sf, "isFasterIfMoreTemplates", "fasterIfMoreTemplates");
             for (Object t : list) {
+                ItemStack tstack = templateItemOf(t);
                 Object rl = ReflectUtils.getFieldValueRecursive(t, "recipes");
                 if (rl instanceof List<?> rll) {
                     for (Object obj : rll) {
-                        MachineRecipe r = convertRecipe(obj);
+                        MachineRecipe r = attachTemplate(convertRecipe(obj), tstack, faster);
                         if (r != null && seen.add(RecipeKeys.of(r))) result.add(r);
                     }
                 }
@@ -202,25 +209,44 @@ public final class RecipeExtractor {
     /** 这个类上有没有 {@code getRecipes()}（无参、返回集合）——只看签名，不实例化。 */
     private static boolean hasRecipeGetter(Class<?> type) {
         if (type == null) return false;
-        for (Class<?> c = type; c != null && c != Object.class; c = c.getSuperclass()) {
-            for (Method m : c.getDeclaredMethods()) {
-                if (!m.getName().equals("getRecipes") || m.getParameterCount() != 0) continue;
-                Class<?> rt = m.getReturnType();
-                if (java.util.Collection.class.isAssignableFrom(rt) || rt.isArray()) return true;
-            }
+        for (Method m : allMethods(type)) {
+            if (!m.getName().equals("getRecipes") || m.getParameterCount() != 0) continue;
+            Class<?> rt = m.getReturnType();
+            if (java.util.Collection.class.isAssignableFrom(rt) || rt.isArray()) return true;
         }
         return false;
     }
 
+    /**
+     * 类 + 全部父类 + <b>全部接口</b>上声明过的方法。
+     *
+     * <p>⚠ 2026-11-10 的坑：只看 {@code getSuperclass()} 会漏掉接口上的方法声明。
+     * RSC 的配方载体字段声明成接口 {@code MachineTicker}，而 {@code getRecipes()}
+     * 声明在它的父接口 {@code RecipesHolder} 上 ⇒ 旧实现判定「没有 getRecipes」，
+     * 于是 RSC 的生成器（材料生成器 / 模板生成器）全部扫出 0 条配方。
+     */
+    private static List<Method> allMethods(Class<?> type) {
+        List<Method> out = new ArrayList<>();
+        Set<Class<?>> visited = new HashSet<>();
+        Deque<Class<?>> queue = new ArrayDeque<>();
+        queue.add(type);
+        while (!queue.isEmpty()) {
+            Class<?> c = queue.poll();
+            if (c == null || c == Object.class || !visited.add(c)) continue;
+            try {
+                out.addAll(Arrays.asList(c.getDeclaredMethods()));
+            } catch (Throwable ignored) {
+            }
+            if (c.getSuperclass() != null) queue.add(c.getSuperclass());
+            queue.addAll(Arrays.asList(c.getInterfaces()));
+        }
+        return out;
+    }
+
     private static void collectFromHolder(Object holder, List<MachineRecipe> out, Set<String> seen) {
         if (holder == null) return;
-        for (Class<?> c = holder.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
-            Method m;
-            try {
-                m = c.getDeclaredMethod("getRecipes");
-            } catch (NoSuchMethodException e) {
-                continue;
-            }
+        for (Method m : allMethods(holder.getClass())) {
+            if (!m.getName().equals("getRecipes") || m.getParameterCount() != 0) continue;
             try {
                 m.setAccessible(true);
                 Object v = m.invoke(holder);
@@ -229,10 +255,10 @@ public final class RecipeExtractor {
                         MachineRecipe mr = convertRecipe(obj);
                         if (mr != null && seen.add(RecipeKeys.of(mr))) out.add(mr);
                     }
+                    return;
                 }
             } catch (Throwable ignored) {
             }
-            return;
         }
     }
 
@@ -242,13 +268,15 @@ public final class RecipeExtractor {
         try {
             if (ReflectUtils.isExtendedFrom(sf.getClass(), "GrowingMachine")) {
                 extractGrowing(sf, result);
+            } else if (ReflectUtils.getFieldValueRecursive(sf, "generation") instanceof java.util.List<?>
+                    && ReflectUtils.getFieldValueRecursive(sf, "tickRate") instanceof Number) {
+                // RSC 的 CustomMaterialGenerator：没有输入，每 tickRate 个粘液刻出一批产物的「材料生成器」
+                extractMaterialGen(sf, result);
             } else if (ReflectUtils.isExtendedFrom(sf.getClass(), ".MaterialGenerator")) {
                 extractMaterial(sf, result);
             } else if (ReflectUtils.isExtendedFrom(sf.getClass(), ".AbstractQuarry")
                     || ReflectUtils.isExtendedFrom(sf.getClass(), ".Quarry")) {
                 extractQuarry(sf, result);
-            } else if (ReflectUtils.isExtendedFrom(sf.getClass(), ".CustomMaterialGenerator")) {
-                extractRSC(sf, result);
             } else {
                 extractGeneric(sf, result);
             }
@@ -264,8 +292,15 @@ public final class RecipeExtractor {
      * 否则下游会把「候选表」当成「全给」—— 腐竹 2026-11-08 的「一次给了 9 种」。
      */
     public static MachineRecipe convertRecipe(Object obj) {
+        if (obj == null) return null;
+        // RSC 的 forDisplay 配方：只给玩家看，机器 matches() 直接 false，不能当生产配方
+        if (isDisplayOnly(obj)) return null;
         MachineRecipe mr = RecipeShapes.decode(obj);
         if (mr == null) return null;
+        // 模板机（RSC CustomTemplateMachineRecipe）：模板不在输入槽、永不消耗，
+        // 抽出来时插到输入第 0 位并标 0 扣 —— 知识生成器的模板区就是照这个位置比的。
+        ItemStack template = templateOf(obj);
+        if (template != null) mr = CatalystRecipe.withTemplate(mr, template, boolOf(obj, "isFasterIfMoreTemplates", "fasterIfMoreTemplates"));
         // 会随机抽一组的（乱序技艺 RandomMachineRecipe 等）：必须走组权重，不能把候选当全给
         GroupedRecipe grouped = GroupedOutputs.read(obj, mr);
         if (grouped != null) return grouped;
@@ -279,6 +314,68 @@ public final class RecipeExtractor {
             java.util.Arrays.fill(ch, 100);
         }
         return ch == null ? mr : ChanceRecipe.of(mr, ch, chooseOne);
+    }
+
+    /** 只给玩家看的展示配方（RSC 的 {@code forDisplay} / {@code isForDisplayOnly()}） */
+    private static boolean isDisplayOnly(Object obj) {
+        try {
+            Object m = ReflectUtils.invokeNoArg(obj, "isForDisplayOnly");
+            if (m instanceof Boolean b && b) return true;
+            Object f = ReflectUtils.getFieldValueRecursive(obj, "forDisplay");
+            return f instanceof Boolean b2 && b2;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 依次试 {@code isXxx()} 与 {@code xxx} 字段，取到 Boolean 就用它 */
+    private static boolean boolOf(Object obj, String method, String field) {
+        try {
+            Object m = ReflectUtils.invokeNoArg(obj, method);
+            if (m instanceof Boolean b) return b;
+            Object f = ReflectUtils.getFieldValueRecursive(obj, field);
+            if (f instanceof Boolean b2) return b2;
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 配方自己声明的模板物品（RSC {@code getTemplateStack()/templateStack}），没有返回 null */
+    private static ItemStack templateOf(Object obj) {
+        try {
+            Object v = ReflectUtils.invokeNoArg(obj, "getTemplateStack");
+            if (v == null) v = ReflectUtils.getFieldValueRecursive(obj, "templateStack");
+            if (v instanceof ItemStack is && is.getType() != Material.AIR) return is;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 「按模板分组」的组对象上的模板物品（RSC {@code MachineTemplate#template()}），没有返回 null */
+    private static ItemStack templateItemOf(Object group) {
+        try {
+            Object v = ReflectUtils.invokeNoArg(group, "template");
+            if (v == null) v = ReflectUtils.getFieldValueRecursive(group, "template");
+            if (v instanceof ItemStack is && is.getType() != Material.AIR) return is;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 把「分组给的模板」补进已解码的配方；概率包装要留在最外层，否则下游看不到概率 */
+    private static MachineRecipe attachTemplate(MachineRecipe r, ItemStack template, boolean faster) {
+        if (r == null || template == null || template.getType() == Material.AIR) return r;
+        if (r instanceof CatalystRecipe) return r;
+        MachineRecipe base = r;
+        int[] ch = null;
+        boolean chooseOne = false;
+        if (r instanceof ChanceRecipe cr) {
+            base = cr.source();
+            ch = cr.chances();
+            chooseOne = cr.chooseOne();
+        }
+        CatalystRecipe cat = CatalystRecipe.withTemplate(base, template, faster);
+        return ch == null ? cat : ChanceRecipe.of(cat, ch, chooseOne);
     }
 
     private static void extractGrowing(SlimefunItem sf, List<MachineRecipe> out) {
@@ -301,6 +398,41 @@ public final class RecipeExtractor {
                 out.add(TemplateRecipe.of(ticks, in, ou));
             }
         }
+    }
+
+    /**
+     * RSC {@code CustomMaterialGenerator}（粉羊科技的金矿石生成器那类）。
+     *
+     * <p>它<b>没有输入槽里的配方</b>：ym l 的 {@code outputItem} 直接建成
+     * {@code List<ItemStack> generation} 字段，{@code tickRate} = 每几粘液刻出一批，
+     * {@code chances}/{@code chooseOne} 管随机。tick 字节码只看
+     * {@code charge >= per && progress >= tickRate} ⇒ 一批 = 一次配方。
+     */
+    private static void extractMaterialGen(SlimefunItem sf, List<MachineRecipe> out) {
+        int ticks = 1;
+        Object tr = ReflectUtils.getFieldValueRecursive(sf, "tickRate");
+        if (tr instanceof Number n) ticks = Math.max(1, n.intValue());
+        Object g = ReflectUtils.getFieldValueRecursive(sf, "generation");
+        if (!(g instanceof java.util.List<?> list)) return;
+        List<ItemStack> outs = new ArrayList<>();
+        for (Object o : list) {
+            if (o instanceof ItemStack is && is.getType() != Material.AIR) outs.add(is.clone());
+        }
+        if (outs.isEmpty()) return;
+        int[] ch = null;
+        Object cv = ReflectUtils.getFieldValueRecursive(sf, "chances");
+        if (cv instanceof java.util.Collection<?> col && col.size() == outs.size()) {
+            ch = new int[col.size()];
+            int i = 0;
+            for (Object o : col) ch[i++] = o instanceof Number n ? Math.max(0, n.intValue()) : 100;
+        }
+        boolean chooseOne = boolOf(sf, "isChooseOne", "chooseOne");
+        if (ch == null && chooseOne) {
+            ch = new int[outs.size()];
+            java.util.Arrays.fill(ch, 100);
+        }
+        MachineRecipe base = new MachineRecipe(ticks, new ItemStack[0], outs.toArray(new ItemStack[0]));
+        out.add(ch == null ? base : ChanceRecipe.of(base, ch, chooseOne));
     }
 
     private static void extractMaterial(SlimefunItem sf, List<MachineRecipe> out) {
@@ -359,43 +491,6 @@ public final class RecipeExtractor {
             for (Material m : ms) tmp.add(new ItemStack(m, amt));
             if (!tmp.isEmpty()) out.add(new MachineRecipe(ticks, new ItemStack[0], tmp.toArray(new ItemStack[0])));
         }
-    }
-
-    private static void extractRSC(SlimefunItem sf, List<MachineRecipe> out) {
-        int tick = 1;
-        Object t = ReflectUtils.getFieldValueRecursive(sf, "tickRate");
-        if (t instanceof Number n) tick = Math.max(1, n.intValue());
-        Object output = ReflectUtils.getFieldValueRecursive(sf, "output");
-        if (output == null) output = ReflectUtils.getFieldValueRecursive(sf, "generation");
-        if (output == null) return;
-        List<Integer> chances = null;
-        Object co = ReflectUtils.getFieldValueRecursive(sf, "chances");
-        if (co instanceof List<?> cl) {
-            chances = new ArrayList<>();
-            for (Object o : cl) chances.add(o instanceof Number n ? n.intValue() : 100);
-        }
-        List<ItemStack> tmp = new ArrayList<>();
-        if (output instanceof List<?> list) {
-            for (int i = 0; i < list.size(); i++) {
-                Object o = list.get(i);
-                if (o instanceof ItemStack is) {
-                    ItemStack c = is.clone();
-                    if (chances != null && i < chances.size()) {
-                        ItemMeta meta = c.getItemMeta();
-                        if (meta != null) {
-                            List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
-                            lore.add("§7概率: §e" + chances.get(i) + "%");
-                            meta.setLore(lore);
-                            c.setItemMeta(meta);
-                        }
-                    }
-                    tmp.add(c);
-                }
-            }
-        } else if (output instanceof ItemStack is) {
-            tmp.add(is.clone());
-        }
-        if (!tmp.isEmpty()) out.add(new MachineRecipe(tick, new ItemStack[0], tmp.toArray(new ItemStack[0])));
     }
 
     /**
