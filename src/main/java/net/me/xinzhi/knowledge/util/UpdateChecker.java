@@ -51,6 +51,9 @@ public final class UpdateChecker {
 
     private static volatile boolean checking;
 
+    /** 网络不通只提醒一次（这台机器连不上 GitHub 时就别每 30 分钟刷一行了）。 */
+    private static volatile boolean warnedNetwork;
+
     /** plugins/update 里已经下好的新版 jar 的固定前缀（Release 资产名 xinzhi-knowledge-<版本>.jar）。 */
     private static final String ASSET_PREFIX = "xinzhi-knowledge-";
 
@@ -69,7 +72,13 @@ public final class UpdateChecker {
                 try {
                     check(plugin, repo, download);
                 } catch (Throwable t) {
-                    plugin.getLogger().fine("[知识机器] 更新检查失败（不影响使用）: " + t);
+                    if (!warnedNetwork) {
+                        warnedNetwork = true;
+                        plugin.getLogger().warning("[知识机器] 更新检查失败（连不上 GitHub，这台机器可能被墙），"
+                                + "不影响插件使用；换个网络或手动换 jar 即可。原因: " + t);
+                    } else {
+                        plugin.getLogger().fine("[知识机器] 更新检查仍失败: " + t);
+                    }
                 }
             };
             Bukkit.getScheduler().runTaskAsynchronously(plugin, task);
