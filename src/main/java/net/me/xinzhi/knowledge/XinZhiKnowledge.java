@@ -15,6 +15,7 @@ import net.me.xinzhi.knowledge.machines.KnowledgeGenerator;
 import net.me.xinzhi.knowledge.machines.PowerGenerator;
 import net.me.xinzhi.knowledge.machines.RecipeMachine;
 import net.me.xinzhi.knowledge.recipe.RecipeScanner;
+import net.me.xinzhi.knowledge.util.UpdateChecker;
 import org.bukkit.Material;
 import org.bukkit.NamespacedKey;
 import org.bukkit.command.Command;
@@ -134,6 +135,13 @@ public final class XinZhiKnowledge extends JavaPlugin implements SlimefunAddon {
         getServer().getPluginManager().registerEvents(new RecipePicker.Click(), this);
         getServer().getPluginManager().registerEvents(new RecipeViewer.Click(), this);
         getLogger().info("XinZhiKnowledge 已加载：4 台机器 + 配方读取器。");
+        UpdateChecker.start(this);
+    }
+
+    @Override
+    public void onDisable() {
+        // 关服时才换 jar（运行中的 jar 被 JVM 锁着），脚本等进程退出后覆盖，下次启动即新版
+        UpdateChecker.installOnShutdown(this);
     }
 
     @Override
@@ -192,7 +200,18 @@ public final class XinZhiKnowledge extends JavaPlugin implements SlimefunAddon {
             for (String line : RecipeScanner.dump(sf)) sender.sendMessage(line);
             return true;
         }
-        sender.sendMessage("§7用法：/xzk [info|reload|scan|dump <机器id>]（info 里带每台机器的平均 tick 耗时）");
+        if (args[0].equalsIgnoreCase("update")) {
+            if (!sender.hasPermission("xzk.update") && !sender.hasPermission("xzk.admin")) {
+                sender.sendMessage("§c没有权限。");
+                return true;
+            }
+            sender.sendMessage("§b[知识机器] 当前 v" + getPluginVersion() + " §8· " + UpdateChecker.status());
+            boolean wasPending = UpdateChecker.status().startsWith("§e");
+            UpdateChecker.checkNow(this);
+            sender.sendMessage("§7已向 GitHub 查一次，结果看控制台（十几秒内）" + (wasPending ? "" : "；有新版本会下到 plugins/update/"));
+            return true;
+        }
+        sender.sendMessage("§7用法：/xzk [info|reload|scan|dump <机器id>|update]（info 里带每台机器的平均 tick 耗时）");
         return true;
     }
 

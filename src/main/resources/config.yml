@@ -52,6 +52,24 @@ power:
   # false = 电网优先、不再另存（回到「虚拟电量只收没接电网时的溢出」）。
   virtual-when-on-net: true
 
+update:
+  # 启动时查一次 GitHub Releases，有新版就下到 plugins/update/，正常关服后自动替换（下次启动生效）
+  check: true
+  # 仓库（release 资产名必须是 xinzhi-knowledge-<版本>.jar）
+  repo: 0xinzhi/xinzhi-knowledge
+  # 发现了就下载。false = 只在控制台报一句，不下载
+  download: true
+  # 关服时自动替换插件 jar。false = 只下载到 plugins/update/，你自己换
+  auto-install: true
+  # 运行期间多久复查一次（分钟），0 = 只在启动时查一次
+  interval-minutes: 30
+  notify:
+    # 玩家进服时告诉管理员一句「有新版本，重启后生效」
+    on-join: true
+    # 新版提示给谁看：在线玩家（普通人）/ 管理员（OP 或 xzk.update 权限）
+    players: false
+    admins: true
+
 machines:
   # 物品 id 前缀，改这个会生成新物品（老方块会变成未知方块）
   item-id-prefix: XZK_

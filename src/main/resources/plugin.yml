@@ -10,7 +10,7 @@ depend:
 commands:
   xzk:
     description: 知识机器信息 / 重载配置
-    usage: /xzk [info|reload]
+    usage: /xzk [info|reload|scan|dump|update] <机器id>
     permission: xzk.use
 
 permissions:
@@ -19,4 +19,7 @@ permissions:
     default: true
   xzk.admin:
     description: 重载配置、清配方缓存
+    default: op
+  xzk.update:
+    description: 收到新版提示、手动触发更新检查
     default: op
