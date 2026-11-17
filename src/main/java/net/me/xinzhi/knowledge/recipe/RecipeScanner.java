@@ -223,7 +223,13 @@ public final class RecipeScanner {
                 mr = TemplateRecipe.of(mr.getTicks(), mr.getInput(), mr.getOutput());
             }
             int[] amounts = null;
-            if (neverConsumes || off || forceGenerator) {
+            if (off) {
+                // ⚠ 这里的语义是「别采信扫描层的催化剂结论」⇒ 所有输入<b>按堆叠原样扣</b>。
+                //   写全 0 等于把每台机器都变成不消耗（craftable 全空、界面永远"扫不出配方"），
+                //   正好和这个保险开关的用途相反（腐竹 2026-11-14 现场就是这么被坑的：
+                //   测试服 scan.use-consume-rules: false ⇒ 快捷熔炉的熔炉配方全判成催化剂）。
+                amounts = fullAmounts(mr.getInput());
+            } else if (neverConsumes || forceGenerator) {
                 ItemStack[] ins = mr.getInput();
                 amounts = new int[ins == null ? 0 : ins.length];
             } else if (mr instanceof AmountsCarrier ac && ac.consumeAmounts() != null) {
@@ -239,13 +245,27 @@ public final class RecipeScanner {
                 }
             }
             ItemStack[] ins = mr.getInput();
-            if (amounts != null && ins != null && amounts.length != ins.length) amounts = null;
+            // 读不出来（反射炸了 / 长度对不上）时按「原样扣」兜底：
+            // 宁可多扣（玩家看得见），也不能因为扫描层抛异常白送 —— Scan 把 null 当全 0。
+            if (amounts == null || (ins != null && amounts.length != ins.length)) amounts = fullAmounts(ins);
             try {
                 out.add(new Scan(mr, amounts, energy.perTick, energy.known));
             } catch (Throwable ignored) {
             }
         }
         return out.isEmpty() ? EMPTY : out;
+    }
+
+    /** 每条输入按自己的堆叠数扣（{@code null}/空气格算 0）——「不采信扫描层」时的兜底口径。 */
+    private static int[] fullAmounts(ItemStack[] ins) {
+        if (ins == null || ins.length == 0) return new int[0];
+        int[] out = new int[ins.length];
+        for (int i = 0; i < ins.length; i++) {
+            ItemStack is = ins[i];
+            if (is == null || is.getType() == org.bukkit.Material.AIR) continue;
+            out[i] = Math.max(0, is.getAmount());
+        }
+        return out;
     }
 
     /**
@@ -323,7 +343,8 @@ public final class RecipeScanner {
                     + " §8| chances " + (s.chances == null ? "§cnull" : "§f" + java.util.Arrays.toString(s.chances))
                     + " §8| chooseOne §f" + s.chanceChooseOne
                     + " §8| groups " + (s.groups == null ? "null" : String.valueOf(s.groups.size()))
-                    + " §8| weights " + (s.weights == null ? "null" : String.valueOf(s.weights.length)));
+                    + " §8| weights " + (s.weights == null ? "null" : String.valueOf(s.weights.length))
+                    + " §8| 随机候选 " + (s.randomChoices.isEmpty() ? "§c无" : "§f" + s.randomChoices.size()));
         }
         return lines;
     }

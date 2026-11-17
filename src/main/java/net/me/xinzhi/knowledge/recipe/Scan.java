@@ -44,6 +44,13 @@ public final class Scan {
     public final Map<ItemKey, Integer> give = new LinkedHashMap<>();
     /** 产物里有「随机产物」（本体常是 AIR，抠不出物品 key，但确实会出东西） */
     public final boolean probabilisticOutput;
+
+    /**
+     * 随机产物<b>可能出的东西</b>（抽样得来，见 {@link ReflectUtils#candidates}）——
+     * 融合机靠它造「随机产物生成器卡」；空表 = 抽不出来（那这台机器就没法融合成卡）。
+     * 每个条目带自己的数量（无尽磨粉机是 64 个矿粉）。
+     */
+    public final List<ItemStack> randomChoices;
     /** 全部输入都是催化剂（= 不消耗输入的配方，生成器专用） */
     public final boolean noConsume;
     /** 展示用：主产物 */
@@ -109,19 +116,67 @@ public final class Scan {
         if (ch != null) {
             for (int c : ch) if (c < 100) { prob = true; break; }
         }
+        List<ItemStack> picks = new ArrayList<>();
+        java.util.Set<String> pickSeen = new java.util.HashSet<>();
         for (ItemStack is : outputs) {
             if (is == null) continue;
             // ⚠ 判随机必须排在判空气之前：MomoTech 的 RandomizedItemStack 本体就是 AIR
-            if (ReflectUtils.isProbabilistic(is)) { prob = true; continue; }
+            if (ReflectUtils.isProbabilistic(is)) {
+                prob = true;
+                // 抽 400 次去重：候选几十种以内基本能覆盖全（这里只用于造卡，不在 tick 里跑）
+                for (ItemStack pick : ReflectUtils.candidates(is, 400)) {
+                    ItemKey pk = ItemKey.of(pick);
+                    if (pk == null) continue;
+                    String sig = pk + "x" + pick.getAmount();
+                    if (pickSeen.add(sig)) {
+                        ItemStack one = pk.toTemplate();
+                        if (one == null) continue;
+                        one.setAmount(pick.getAmount());
+                        picks.add(one);
+                    }
+                }
+                continue;
+            }
             if (is.getType() == Material.AIR) continue;
             ItemKey k = ItemKey.of(is);
             if (k == null) continue;
             give.merge(k, is.getAmount(), Integer::sum);
         }
+        this.randomChoices = picks;
         this.probabilisticOutput = prob;
         this.noConsume = cost.isEmpty() && producesSomething();
         this.icon = outputs.length > 0 ? outputs[0] : null;
         this.weights = raw instanceof WeightedRecipe wr ? wr.weights() : null;
+    }
+
+    /**
+     * 「随机产物生成器卡」专用的伪配方：没有输入，产物是<b>等权候选表</b>，
+     * 每次只抽一件给出去（{@link #weights} 全 1 ⇒ 走 {@code InvOps.produceWeighted}）。
+     *
+     * <p>这样随机产物在知识机器里保持「原来怎么随机就怎么随机」，而不是拆成每种产物一张卡
+     * （拆卡会把「随机出一种」变成「每种都有」，凭空放大产量）。
+     */
+    public Scan(List<ItemStack> choices, int ticks, int energyPerTick) {
+        this.rawClass = "CARD_POOL";
+        this.inputs = new ItemStack[0];
+        this.amounts = new int[0];
+        this.outputs = choices == null ? new ItemStack[0] : choices.toArray(new ItemStack[0]);
+        this.ticks = Math.max(1, ticks);
+        this.energyPerTick = Math.max(0, energyPerTick);
+        this.energyKnown = true;
+        this.energyPerCraft = this.energyPerTick * this.ticks;
+        this.weights = new int[outputs.length];
+        java.util.Arrays.fill(this.weights, 1);
+        this.chances = null;
+        this.chanceChooseOne = false;
+        this.groups = null;
+        this.groupWeights = null;
+        this.probabilisticOutput = true;
+        this.randomChoices = List.of(outputs);
+        this.noConsume = true;
+        this.icon = outputs.length > 0 ? outputs[0] : null;
+        this.template = this.icon;
+        this.fasterByTemplate = false;
     }
 
     private static int readTicks(MachineRecipe raw) {
@@ -130,6 +185,37 @@ public final class Scan {
             return t > 0 ? t : 1;
         } catch (Throwable t) {
             return 1;
+        }
+    }
+
+    /** 配置/顺序无关的内容签名：锁配方用它，而不是锁列表下标（列表会因重载、缓存重建而换顺序） */
+    private String sigCache;
+
+    public String signature() {
+        if (sigCache != null) return sigCache;
+        StringBuilder b = new StringBuilder();
+        appendSig(b, cost);
+        b.append('>');
+        appendSig(b, give);
+        b.append('>').append(ticks);
+        if (!randomChoices.isEmpty()) {
+            java.util.List<String> rs = new ArrayList<>();
+            for (ItemStack it : randomChoices) {
+                ItemKey k = ItemKey.of(it);
+                rs.add((k == null ? "?" : k.toString()) + "x" + it.getAmount());
+            }
+            java.util.Collections.sort(rs);
+            b.append('>').append(String.join(",", rs));
+        }
+        sigCache = b.toString();
+        return sigCache;
+    }
+
+    private static void appendSig(StringBuilder b, Map<ItemKey, Integer> m) {
+        java.util.TreeMap<String, Integer> t = new java.util.TreeMap<>();
+        for (Map.Entry<ItemKey, Integer> e : m.entrySet()) t.put(String.valueOf(e.getKey()), e.getValue());
+        for (Map.Entry<String, Integer> e : t.entrySet()) {
+            b.append(e.getKey()).append('x').append(e.getValue()).append(';');
         }
     }
 

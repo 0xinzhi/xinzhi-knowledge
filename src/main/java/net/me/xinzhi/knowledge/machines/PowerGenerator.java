@@ -16,6 +16,7 @@ import net.me.xinzhi.knowledge.config.Settings;
 import net.me.xinzhi.knowledge.core.ItemKey;
 import net.me.xinzhi.knowledge.recipe.RecipeScanner;
 import net.me.xinzhi.knowledge.recipe.Scan;
+import net.me.xinzhi.knowledge.tank.TankNet;
 import net.me.xinzhi.knowledge.util.GuiItems;
 import net.me.xinzhi.knowledge.util.InputProbe;
 import net.me.xinzhi.knowledge.util.PowerProbe;
@@ -146,6 +147,8 @@ public final class PowerGenerator extends BaseKnowledgeMachine implements Energy
         boolean onNetKnown;
         /** 过载结束时间（毫秒）；0 = 没在过载 */
         long ovlUntil;
+        /** 配方副产物：输出储罐满了就攒着，下 tick 再塞（不丢地上） */
+        final java.util.ArrayDeque<ItemStack> pending = new java.util.ArrayDeque<>();
 
         void reset() {
             machineId = null;
@@ -177,6 +180,9 @@ public final class PowerGenerator extends BaseKnowledgeMachine implements Energy
         st.loc = loc;
         st.ticks++;
         st.netOutput = 0;
+        // 储罐：燃料从输入罐补；输出罐当这台机器的「产物格」（腐竹 2026-11-16）
+        TankNet.refill(menu, inputSlots(), TankNet.around(b, false));
+        flushPending(b, menu, st);
         // 虚拟电量攒够 20 tick 落一次盘
         if (st.virtDirty && st.ticks - st.virtFlushed >= 20) flushVirtual(st, loc);
 
@@ -333,6 +339,7 @@ public final class PowerGenerator extends BaseKnowledgeMachine implements Energy
                     return;
                 }
                 InvOps.consume(menu, inputSlots(), fuel.cost, affordable);
+                spit(b, menu, st, fuel, 1);
                 st.burnCount = affordable;
                 // 效率越高烧得越快：一轮 = 燃料 tick 数 ÷ 效率
                 st.burnEnd = st.ticks + Math.max(1, (int) Math.round(fuel.ticks / Math.max(0.01, eff)));
@@ -346,7 +353,10 @@ public final class PowerGenerator extends BaseKnowledgeMachine implements Energy
                 return;
             }
             int crafts = CraftMath.perTick(st.fuelAcc, st.count, eff, fuel.ticks, capCrafts);
-            if (crafts > 0) InvOps.consume(menu, inputSlots(), fuel.cost, crafts);
+            if (crafts > 0) {
+                InvOps.consume(menu, inputSlots(), fuel.cost, crafts);
+                spit(b, menu, st, fuel, crafts);
+            }
         }
 
         // ---- 发电 ----
@@ -472,6 +482,40 @@ public final class PowerGenerator extends BaseKnowledgeMachine implements Energy
      * <p>腐竹 2026-11-08：「菜单的刷新不是很及时，如果没在发电就不刷新了」——
      * 原来只在「跑起来」的分支里每 10 tick 画一次，停摆时状态卡就冻住了。
      */
+    /** 燃料配方的副产物：优先塞输出储罐（发电机自己没有产物格） */
+    private void spit(Block b, BlockMenu menu, State st, Scan s, int times) {
+        if (s == null || times <= 0 || s.give.isEmpty()) return;
+        for (Map.Entry<ItemKey, Integer> e : s.give.entrySet()) {
+            ItemStack proto = e.getKey().toTemplate();
+            if (proto == null) continue;
+            proto.setAmount(Math.max(1, e.getValue()) * Math.max(1, times));
+            st.pending.addLast(proto);
+        }
+        flushPending(b, menu, st);
+    }
+
+    /** 把攒着的副产物往输出储罐里塞；塞不下就留着（不丢地上，腐竹要「产物不掉地」） */
+    private void flushPending(Block b, BlockMenu menu, State st) {
+        if (st.pending.isEmpty()) return;
+        List<BlockMenu> tanks = TankNet.around(b, true);
+        while (!st.pending.isEmpty()) {
+            ItemStack head = st.pending.peekFirst();
+            ItemStack rest = TankNet.deposit(tanks, head);
+            if (rest == null) {
+                st.pending.pollFirst();
+                continue;
+            }
+            if (rest.getAmount() < head.getAmount()) {
+                head.setAmount(rest.getAmount());
+                continue;
+            }
+            break;
+        }
+        if (!st.pending.isEmpty()) {
+            status(menu, st, "§c输出储罐满了 · 副产物等它腾地方");
+        }
+    }
+
     private void status(BlockMenu menu, State st, String text) {
         boolean changed = !text.equals(st.lastStatus);
         st.lastStatus = text;

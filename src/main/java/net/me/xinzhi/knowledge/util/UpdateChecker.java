@@ -286,6 +286,14 @@ public final class UpdateChecker {
             saveState(plugin, null);
             return;
         }
+        // 本地是开发版（比发布版还新，比如 1.1.9 对 1.1.8）时绝不能「更新」成旧版
+        if (compareVersion(latest, current) < 0) {
+            plugin.getLogger().info("[知识机器] 本地 " + current + " 比发布版 " + latest + " 还新，不更新");
+            pendingVersion = null;
+            pendingJar = null;
+            saveState(plugin, null);
+            return;
+        }
 
         String url = null, name = null;
         long assetSize = -1;

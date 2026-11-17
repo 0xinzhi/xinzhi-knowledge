@@ -139,7 +139,10 @@ public final class RecipeShapes {
                 in.setAmount(Math.max(1, amounts[i]));
                 ins[i] = in;
             }
-            return new MachineRecipe(1, ins, new ItemStack[]{ out.clone() });
+            // ⚠ 随机产物（无尽 RandomizedItemStack 等）绝不能在解码阶段 clone：
+            //   它们的 clone() 本身就是「抽一次」，克隆会把候选表坍缩成单件（2026-11-15 磨粉机实测）。
+            ItemStack proto = ReflectUtils.isProbabilistic(out) ? out : out.clone();
+            return new MachineRecipe(1, ins, new ItemStack[]{ proto });
         } catch (Exception e) {
             return null;
         }

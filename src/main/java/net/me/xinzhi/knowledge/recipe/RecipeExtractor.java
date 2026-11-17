@@ -25,7 +25,8 @@ import java.util.Set;
  * （2026-11-07），只是去掉了主附属自己 yml 机器那支（{@code ExactRecipeSource}）。
  * 为什么不直接依赖主附属：本附属要能<b>单独装</b>（腐竹要求独立成附属）。
  *
- * <p>读取顺序：{@code AContainer#getMachineRecipes} → 字段
+ * <p>读取顺序：{@code AContainer#getMachineRecipes} → 任意类的无参 {@code getMachineRecipes()}
+ * （逻辑工艺的 {@code AbstractMachine} 用它懒加载 supplier）→ 字段
  * {@code recipes/machineRecipes/recipeList/RECIPE_LIST} → {@code templates[].recipes}
  * → {@code getRecipes()} → 配方载体字段（{@link #extractFromCarriers}，RSC 的 ticker 走这条）
  * → 生成器那族（{@link #extractGeneratorRecipes}）
@@ -65,6 +66,13 @@ public final class RecipeExtractor {
             } catch (Exception ignored) {
             }
         }
+
+        // ⚠ getMachineRecipes()（无参）不能省：逻辑工艺 LogiTech 的机器继承自
+        //   AbstractMachine，配方挂在 protected Supplier machineRecipeSupplier 上，
+        //   公开字段 machineRecipes 一直是 null，只有调 getMachineRecipes() 才会被填。
+        //   2026-11-14 腐竹报「快捷熔炉放进去一直扫不出配方」就是这个原因。
+        //   ⚠ 这里只调无参版本：带 (Block, BlockMenu) 的重载要真实方块，一个都别碰。
+        collectFromMachineRecipesApi(sf, result, seen);
 
         // ⚠ RECIPE_LIST（大写）不能省：无尽奇点构造机把配方放在 private static final
         //   List<...> RECIPE_LIST 里，字段查找大小写敏感。
@@ -120,6 +128,37 @@ public final class RecipeExtractor {
         return DisplayRecipeGuard.filter(result, sf);
     }
 
+
+    /**
+     * <b>配方由无参 {@code getMachineRecipes()} 懒加载</b>的机器（不点名任何附属）。
+     *
+     * <p>典型：逻辑工艺 LogiTech 的 {@code AbstractMachine}——
+     * {@code public List<MachineRecipe> machineRecipes} 默认是 null，
+     * {@code getMachineRecipes()} 里才 {@code machineRecipes = machineRecipeSupplier.get()}。
+     * 只读字段永远是 0 条。
+     *
+     * <p>判据只用签名：<b>类 / 父类 / 接口上存在 0 参数的 {@code getMachineRecipes()}，
+     * 返回 Collection</b> → 调它一次并逐条解码。不点类名、不点字段名。
+     * 方法本身是第三方自己的 getter（它们自己的界面每开一次就调一次），调用安全。
+     */
+    private static void collectFromMachineRecipesApi(SlimefunItem sf, List<MachineRecipe> out, Set<String> seen) {
+        for (Method m : allMethods(sf.getClass())) {
+            if (!m.getName().equals("getMachineRecipes") || m.getParameterCount() != 0) continue;
+            if (!java.util.Collection.class.isAssignableFrom(m.getReturnType())) continue;
+            Object v;
+            try {
+                m.setAccessible(true);
+                v = m.invoke(sf);
+            } catch (Throwable t) {
+                continue;
+            }
+            if (!(v instanceof java.util.Collection<?> col)) continue;
+            for (Object obj : col) {
+                MachineRecipe mr = convertRecipe(obj);
+                if (mr != null && seen.add(RecipeKeys.of(mr))) out.add(mr);
+            }
+        }
+    }
 
     /**
      * <b>配方寄存在另一个对象里</b>的通用探测（不点名任何附属）。

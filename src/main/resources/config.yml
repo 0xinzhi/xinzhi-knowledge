@@ -70,6 +70,36 @@ update:
     players: false
     admins: true
 
+encoder:
+  # 编一次生成器要多少 tick（100 秒 = 200 tick）。腐竹 2026-11-14 没定具体值，先给 200。
+  craft-ticks: 200
+  # 编码时每 tick 扣多少 J（0 = 不耗电）
+  energy-per-tick: 40
+  # 基础物品表门槛：等价附属的「基础价」低于这个值才算基础物品，才能放进编码机。
+  # 5000 = 腐竹 2026-11-14 定的线（800 个锚点里 781 条能编码）。
+  base-item-max-emc: 5000
+  # 是否把「生物掉落物兜底价」那一套并入基础物品表（腐竹 2026-11-15）。
+  # 口径与等价附属一致：按掉落概率 5/20/100/200/500，读不到概率 60，只补表里没有的物品。
+  base-item-mob-drops: true
+  # 是否把「破坏方块概率掉落」那一套并入基础物品表（腐竹 2026-11-15：「还有方块掉落」）。
+  # 读 RSC 各附属 items.yml 里的 drop_from / drop_chance，口径与等价附属一致：
+  # 能反复刷的方块 >=30% → 5 / >=5% → 15 / 更低 → 30，不可再生 → 100，只补表里没有的物品。
+  base-item-block-drops: true
+  # 地理资源（矿机产出、没有合成配方）的默认价（腐竹 2026-11-15：「和地理资源」）。
+  # 与等价附属 price.geo-resource-default 同一口径，默认 30；0 = 不并入。
+  base-item-geo-price: 30
+  # 加速按钮（界面第 47 格）：花这么多 J 把本次编码直接推满（腐竹 2026-11-14：5 万 J）
+  fast-cost: 50000
+
+generator:
+  # 生成器卡接进知识生成器后每 tick 扣多少 J（0 = 白嫖电表）
+  card-energy-per-tick: 20
+
+card-machine:
+  # 编码生成器（卡 → 产物，45 个卡槽那台）每 tick 扣多少 J。
+  # 腐竹 2026-11-14 第 4 条要求这台耗电 0，所以默认 0。
+  energy-per-tick: 0
+
 machines:
   # 物品 id 前缀，改这个会生成新物品（老方块会变成未知方块）
   item-id-prefix: XZK_

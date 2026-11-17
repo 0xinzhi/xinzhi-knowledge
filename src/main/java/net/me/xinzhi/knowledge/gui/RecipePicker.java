@@ -115,14 +115,15 @@ public final class RecipePicker {
             if (slot == 45) { h.prev(); return; }
             if (slot == 53) { h.next(); return; }
             if (slot == 49) {
-                MachineUtil.unset(h.loc, "xzk-recipe");
+                net.me.xinzhi.knowledge.recipe.RecipeLock.clear(h.loc);
                 p.sendMessage("§7已取消锁定，机器回到自动识别。");
                 backToMachine(p, h);
                 return;
             }
             int idx = h.page * 45 + slot;
             if (slot >= 45 || idx >= h.list.size()) return;
-            MachineUtil.set(h.loc, "xzk-recipe", String.valueOf(idx));
+            // 同时写下标（界面高亮）与内容签名（机器真正按签名找那一条，顺序变了也不会跑偏）
+            net.me.xinzhi.knowledge.recipe.RecipeLock.write(h.loc, h.list.get(idx), idx);
             p.sendMessage("§a已锁定配方 #" + (idx + 1) + " §7（" + h.machineId + "）");
             backToMachine(p, h);
         }

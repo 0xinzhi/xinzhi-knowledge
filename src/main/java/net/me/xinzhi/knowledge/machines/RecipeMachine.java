@@ -8,8 +8,10 @@ import io.github.thebusybiscuit.slimefun4.core.handlers.BlockPlaceHandler;
 import me.mrCookieSlime.Slimefun.api.inventory.BlockMenu;
 import net.me.xinzhi.knowledge.config.Settings;
 import net.me.xinzhi.knowledge.core.ItemKey;
+import net.me.xinzhi.knowledge.recipe.RecipeLock;
 import net.me.xinzhi.knowledge.recipe.RecipeScanner;
 import net.me.xinzhi.knowledge.recipe.Scan;
+import net.me.xinzhi.knowledge.tank.TankNet;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -130,8 +132,8 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
         int blockedUntil;
         /** 台数（识别槽 + 附加机器槽里同款机器的堆叠数）：只在识别那一刻读一次 */
         int count = 1;
-        /** 锁定配方下标的缓存（每 tick 读一次方块数据太贵，5 tick 读一次） */
-        int lockedCache = -1;
+        /** 锁定配方的缓存（每 tick 读一次方块数据太贵，5 tick 读一次） */
+        Scan lockedCache;
         int lockedAt = 0;
         /** 附加槽里混进了别的机器（不算台数，界面上要提一句） */
         boolean mixedMachines;
@@ -143,13 +145,16 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             acc[0] = 0;
             count = 1;
             mixedMachines = false;
-            lockedCache = -1;
+            lockedCache = null;
             lockedAt = 0;
         }
     }
 
     @Override
     protected void tick(Block b, BlockMenu menu) {
+        // 储罐：输入格先从输入罐补满，产物扫进输出罐（腐竹 2026-11-16：「也接上」）
+        TankNet.refill(menu, inputSlots(), TankNet.around(b, false));
+        TankNet.sweep(menu, outputSlots(), TankNet.around(b, true));
         Location loc = b.getLocation();
         State st = states.computeIfAbsent(loc, k -> new State());
         st.ticks++;
@@ -177,14 +182,18 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             st.count = countMachines(menu, sf, mixed);
             st.mixedMachines = mixed[0];
             if (!sf.getId().equals(st.machineId)) {
+                // 只认「方块数据里登记的确实是另一台机器」。st 是内存态，重启/重载后它是 null，
+                // 那时清锁等于把玩家选的配方白扔（腐竹 2026-11-15：怎么锁都跑第一条）
+                String stored = MachineUtil.info(loc, KEY_MACHINE);
                 st.machineId = sf.getId();
                 st.machineName = nameOf(sf);
                 st.multiblock = RecipeScanner.skippedAsMultiblock(sf);
                 st.scans = scansFor(sf);
                 st.acc[0] = 0;
-                // 换了机器，之前锁的配方下标对新机器没有意义，必须作废（腐竹 2026-11-07 报的坑）
-                MachineUtil.unset(loc, KEY_RECIPE);
+                if (stored != null && !stored.equals(sf.getId())) RecipeLock.clear(loc);
                 MachineUtil.set(loc, KEY_MACHINE, sf.getId());
+                st.lockedCache = null;
+                st.lockedAt = 0;
             }
         }
         if (st.blockedUntil > st.ticks) return;
@@ -199,18 +208,28 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
 
         // 锁定配方下标：每 tick 读一次方块数据太贵（腐竹 2026-11-08 问「合成机占用为什么高」），
         // 改成 5 tick 读一次；换机器/点取消时 lockedAt 会归零，立刻重读。
-        int locked;
+        // 锁的是「配方内容」而不是列表下标：列表重建/重排后下标会指向别的配方（腐竹 2026-11-15）
+        Scan lockedScan;
+        boolean lockRequested;
         if (st.ticks - st.lockedAt >= 5 || st.lockedAt == 0) {
-            locked = MachineUtil.intInfo(loc, KEY_RECIPE, -1);
-            st.lockedCache = locked;
+            lockedScan = RecipeLock.resolve(loc, st.scans);
+            lockRequested = RecipeLock.requested(loc);
+            st.lockedCache = lockedScan;
             st.lockedAt = st.ticks;
         } else {
-            locked = st.lockedCache;
+            lockedScan = st.lockedCache;
+            lockRequested = lockedScan != null;
         }
         Scan chosen;
         Map<ItemKey, Integer> have = null;
-        if (locked >= 0 && locked < st.scans.size()) {
-            chosen = st.scans.get(locked);
+        if (lockedScan != null) {
+            chosen = lockedScan;
+        } else if (lockRequested) {
+            // 选的这条已经不在这台机器的列表里了 —— 说明白，别偷偷跑第一条
+            st.acc[0] = 0;
+            st.blockedUntil = st.ticks + idleSkip;
+            render(menu, "§c锁定的配方已不在这台机器的列表里 §7(换过机器或重载过) §8· 点配方格重新选");
+            return;
         } else {
             have = InvOps.count(menu, inputSlots());
             chosen = autoMatch(have, st.scans);
@@ -218,7 +237,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
         if (chosen == null) {
             st.acc[0] = 0;
             st.blockedUntil = st.ticks + idleSkip;
-            render(menu, locked >= 0 ? "§7锁定配方缺料，等材料" : "§7输入槽里没有能做的配方");
+            render(menu, "§7输入槽里没有能做的配方");
             return;
         }
 

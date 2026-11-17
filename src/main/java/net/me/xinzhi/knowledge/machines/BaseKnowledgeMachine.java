@@ -54,6 +54,15 @@ public abstract class BaseKnowledgeMachine extends AbstractMachine implements En
     /** 状态显示格（不可放物品）；-1 = 不要 */
     protected int statusSlot() { return Layout.STATUS; }
 
+    /**
+     * 说明展示格（不可放物品，纯信息）；-1 = 不要。
+     * <p>腐竹 2026-11-14：编码生成器中间那一列是「功能槽，用来分隔和显示信息」。
+     */
+    protected int infoSlot() { return -1; }
+
+    /** 说明格里的文字（{@link #infoSlot()} >= 0 时才有意义） */
+    protected String[] infoLines() { return new String[0]; }
+
     /** 状态卡第二行：告诉玩家哪个槽放机器读配方、哪些格叠台数（腐竹 2026-11-08） */
     protected String hintLore() {
         return "§8机器列：上面那格放机器读配方，其余格放同款机器叠台数";
@@ -76,10 +85,13 @@ public abstract class BaseKnowledgeMachine extends AbstractMachine implements En
     /** 识别槽 + 附加机器槽 */
     protected int[] machineSlots() {
         int[] extra = extraMachineSlots();
-        int[] all = new int[extra.length + 1];
-        all[0] = machineSlot();
-        System.arraycopy(extra, 0, all, 1, extra.length);
-        return all;
+        int slot = machineSlot();
+        int n = (slot >= 0 ? 1 : 0) + extra.length;
+        int[] all = new int[n];
+        int i = 0;
+        if (slot >= 0) all[i++] = slot;
+        for (int v : extra) if (v >= 0) all[i++] = v;
+        return java.util.Arrays.copyOf(all, i);
     }
 
     /**
@@ -117,8 +129,17 @@ public abstract class BaseKnowledgeMachine extends AbstractMachine implements En
         // BlockMenuPreset 的 size 默认是 -1（按占用格自动推断）：右边几列没占格，
         // 整个界面就被截窄了（腐竹 2026-11-08 报的「列数被省去了」）。这里钉死 54 格 = 9×6。
         preset.setSize(54);
+        int info = infoSlot();
         for (int i = 0; i < 54; i++) {
+            if (i == info) continue;   // 说明格自己画，别先铺成锁死板
             if (!isFree(i)) preset.addItem(i, LOCKED_PANE, (p, s, item, action) -> false);
+        }
+        if (info >= 0) {
+            String[] lines = infoLines();
+            preset.addItem(info, net.me.xinzhi.knowledge.util.GuiItems.of(
+                    Material.KNOWLEDGE_BOOK, menuTitle(),
+                    lines.length == 0 ? new String[]{"§7左 4 列放生成器卡 · 右 4 列出产物"} : lines),
+                    (p, s, item, action) -> false);
         }
         int rs = recipeSlot();
         if (rs >= 0) {
@@ -145,10 +166,13 @@ public abstract class BaseKnowledgeMachine extends AbstractMachine implements En
         SlimefunItem sf = SlimefunItem.getById(id);
         List<Scan> list = scansFor(sf);
         if (list.isEmpty()) {
-            p.sendMessage("§c这台机器扫不出配方，没法选。");
+            p.sendMessage(noRecipeMessage(sf));
             return;
         }
-        int cur = MachineUtil.intInfo(b.getLocation(), "xzk-recipe", -1);
+        // 高亮跟「签名」走：下标可能是老数据，签名才是机器真正在跑的那一条
+        int cur = MachineUtil.intInfo(b.getLocation(), net.me.xinzhi.knowledge.recipe.RecipeLock.KEY_INDEX, -1);
+        Scan lockedNow = net.me.xinzhi.knowledge.recipe.RecipeLock.resolve(b.getLocation(), list);
+        if (lockedNow != null) cur = list.indexOf(lockedNow);
         RecipePicker.open(p, b.getLocation(), id, list, cur, menu);
     }
 
@@ -199,6 +223,17 @@ public abstract class BaseKnowledgeMachine extends AbstractMachine implements En
     }
 
     /** 机器名（认出来时给玩家看，免得「显示这个」不知道是哪台） */
+    /**
+     * 配方选择列表为空时给玩家的一句话。
+     *
+     * <p>子类可以覆盖成更具体的解释（融合机只认「要扣料」的配方，碰到纯生成器配方要说清原因，
+     * 否则玩家只会看到一句「扫不出配方」——腐竹 2026-11-14 连报两轮）。
+     */
+    protected String noRecipeMessage(io.github.thebusybiscuit.slimefun4.api.items.SlimefunItem sf) {
+        String id = sf == null ? "?" : sf.getId();
+        return "§c这台机器扫不出配方，没法选。 §8(/xzk dump " + id + " 看扫描结果)";
+    }
+
     protected static String nameOf(io.github.thebusybiscuit.slimefun4.api.items.SlimefunItem sf) {
         try {
             String n = sf.getItemName();

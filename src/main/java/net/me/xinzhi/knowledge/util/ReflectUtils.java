@@ -146,6 +146,85 @@ public final class ReflectUtils {
         if (item == null || !isProbabilistic(item)) return null;
         Object rolled = invokeNoArg(item, "getInstance");
         if (rolled instanceof ItemStack is) return is.clone();
+        // 另一族随机产物没有 getInstance()，而是<b>重写了 clone()</b>：
+        // InfinityExpansion 的 {@code Machines$RandomizedItemStack} 就是
+        // {@code clone() { return items[random.nextInt(items.length)].clone(); }}
+        // —— 无尽磨粉机的 64 矿粉就是这么抽的。只看 getInstance 会把这类当成「永远不中」，
+        // 表现成「配方跑完了但产物槽什么都没出」（腐竹 2026-11-15 报的现象）。
+        // 只认「自己重写了 clone」的类：普通 ItemStack 的 clone() 只是复制，拿它当抽法会把原型当结果。
+        try {
+            java.lang.reflect.Method m = item.getClass().getMethod("clone");
+            if (m.getDeclaringClass() != ItemStack.class) {
+                // ⚠ RandomizedItemStack 是附属里的 private 内嵌类：不 setAccessible(true) 会
+                //   IllegalAccessException（被下面吞掉 ⇒ 表现成“抽不出来”，2026-11-15 实测）。
+                m.setAccessible(true);
+                Object o = m.invoke(item);
+                if (o instanceof ItemStack is) return is;   // 可能是 AIR = 这次没中
+            }
+        } catch (Throwable ignored) {
+        }
         return null;
+    }
+
+    /**
+     * 抽若干次，把随机产物「可能出哪些东西」采出来（用于给融合机造「随机产物生成器卡」）。
+     *
+     * <p>随机产物的候选表通常藏在私有字段里（{@code items} 之类），字段名各家不同；
+     * 但它们的抽法（{@link #rollOwn}）是公开行为，所以直接<b>多次抽样去重</b>——
+     * 只要候选不多（几十种以内），抽几百次就能覆盖全。
+     *
+     * <p>⚠ 抽到 AIR 表示这次没中，不算候选；一个都抽不出来就返回空表（调用方当成不支持）。
+     */
+    public static java.util.List<ItemStack> candidates(ItemStack proto, int samples) {
+        java.util.List<ItemStack> out = new java.util.ArrayList<>();
+        if (proto == null || samples <= 0) return out;
+        // 先试「候选表字段」（items / rewards / drops…）：这是精确覆盖，不受抽样运气影响
+        java.util.List<ItemStack> direct = candidateFields(proto);
+        if (!direct.isEmpty()) return direct;
+        for (int i = 0; i < samples; i++) {
+            ItemStack got = rollOwn(proto);
+            if (got == null || got.getType() == org.bukkit.Material.AIR || got.getAmount() <= 0) continue;
+            out.add(got);
+            if (out.size() >= 256) break;
+        }
+        return out;
+    }
+
+    /**
+     * 直接从随机产物对象上找「候选物品表」字段（{@code ItemStack[]} 或 {@code Collection<ItemStack>}，
+     * 字段名带 item/out/reward/drop/candidate/result/pool）。找不到返回空表。
+     *
+     * <p>抽样（{@link #candidates} 的循环）依赖运气，候选多时会漏；能读到字段就读字段。
+     */
+    private static java.util.List<ItemStack> candidateFields(ItemStack proto) {
+        java.util.List<ItemStack> out = new java.util.ArrayList<>();
+        for (Class<?> c = proto.getClass(); c != null && c != Object.class; c = c.getSuperclass()) {
+            for (java.lang.reflect.Field f : c.getDeclaredFields()) {
+                if (java.lang.reflect.Modifier.isStatic(f.getModifiers())) continue;
+                String n = f.getName().toLowerCase(java.util.Locale.ROOT);
+                if (!(n.contains("item") || n.contains("out") || n.contains("reward")
+                        || n.contains("drop") || n.contains("candidate") || n.contains("result")
+                        || n.contains("pool"))) continue;
+                try {
+                    f.setAccessible(true);
+                    Object v = f.get(proto);
+                    java.util.List<ItemStack> got = new java.util.ArrayList<>();
+                    if (v instanceof ItemStack[] arr) {
+                        for (ItemStack is : arr) if (is != null) got.add(is);
+                    } else if (v instanceof java.util.Collection<?> col) {
+                        for (Object o : col) if (o instanceof ItemStack is) got.add(is);
+                    }
+                    if (got.isEmpty()) continue;
+                    // 候选表必须是「配方给自己看的那批」：元素都不能是空气
+                    boolean allAir = true;
+                    for (ItemStack is : got) if (!is.getType().isAir()) { allAir = false; break; }
+                    if (allAir) continue;
+                    for (ItemStack is : got) out.add(is.clone());
+                    return out;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return out;
     }
 }

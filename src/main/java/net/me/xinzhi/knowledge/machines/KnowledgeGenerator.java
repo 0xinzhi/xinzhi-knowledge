@@ -7,9 +7,12 @@ import io.github.thebusybiscuit.slimefun4.api.recipes.RecipeType;
 import io.github.thebusybiscuit.slimefun4.core.handlers.BlockPlaceHandler;
 import me.mrCookieSlime.Slimefun.api.inventory.BlockMenu;
 import net.me.xinzhi.knowledge.config.Settings;
+import net.me.xinzhi.knowledge.core.GeneratorCard;
 import net.me.xinzhi.knowledge.core.ItemKey;
+import net.me.xinzhi.knowledge.core.MachineWhitelist;
 import net.me.xinzhi.knowledge.recipe.RecipeScanner;
 import net.me.xinzhi.knowledge.recipe.Scan;
+import net.me.xinzhi.knowledge.tank.TankNet;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -128,6 +131,20 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
         int blockedUntil;
         int count = 1;
         boolean mixedMachines;
+        /** 识别槽里的是生成器卡（不是机器） */
+        boolean cardMode;
+        /** 这台机器走「名单识别」（生物模拟室：配方扫不到，靠芯片掉落表） */
+        boolean chamber;
+        /** 名单机器的节拍（逻辑 2 tick / 无尽 30 tick） */
+        int chamberTicks;
+        /** 当前芯片内容签名（换芯片才重算伪配方） */
+        String chipSig;
+        /** 芯片张数：一张芯片带一台机器（和模板数决定台数同一口径） */
+        int limit;
+        /** 识别到的机器本体（自输出机器要拿它去查 A=A 配方） */
+        SlimefunItem sf;
+        /** 自输出机器（A=A）：模板区放什么就产什么 */
+        boolean selfOut;
         void reset() {
             machineId = null;
             machineName = null;
@@ -136,11 +153,20 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
             acc[0] = 0;
             count = 1;
             mixedMachines = false;
+            cardMode = false;
+            chamber = false;
+            chamberTicks = 0;
+            chipSig = null;
+            limit = 0;
+            sf = null;
+            selfOut = false;
         }
     }
 
     @Override
     protected void tick(Block b, BlockMenu menu) {
+        // 产物先塞输出储罐（腐竹 2026-11-15：「先放入储罐，储罐满了再放入机器」）
+        TankNet.sweep(menu, outputSlots(), TankNet.around(b, true));
         Location loc = b.getLocation();
         State st = states.computeIfAbsent(loc, k -> new State());
         st.ticks++;
@@ -152,28 +178,116 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
         int identify = cfg == null ? 4 : cfg.identifyEveryTicks();
         if (st.machineId == null || st.ticks % Math.max(1, identify) == 0) {
             ItemStack tool = menu.getItemInSlot(machineSlot());
-            SlimefunItem sf = MachineUtil.machineIn(tool);
-            if (sf == null) {
+
+            // ---- 生成器卡：不认机器，直接当成一条「不消耗输入的配方」 ----
+            if (GeneratorCard.isCard(tool)) {
+                String sig = GeneratorCard.signature(tool);
+                if (!sig.equals(st.machineId)) {
+                    Scan cardScan = GeneratorCard.scanOf(tool, cardEnergy(cfg));
+                    st.machineId = sig;
+                    st.cardMode = true;
+                    st.machineName = GeneratorCard.productName(tool);
+                    st.multiblock = false;
+                    st.scans = cardScan == null ? List.of() : List.of(cardScan);
+                    st.acc[0] = 0;
+                    st.limit = 0;
+                    st.chamber = false;
+                    MachineUtil.set(loc, KEY_MACHINE, "CARD");
+                }
+                // 同款卡叠好几张只加产量、不改间隔（腐竹 2026-11-14）
+                st.count = cardCount(menu);
+                st.mixedMachines = false;
+                if (st.blockedUntil > st.ticks) st.blockedUntil = 0;
+                if (st.scans.isEmpty()) {
+                    st.blockedUntil = st.ticks + idleSkip;
+                    render(menu, "§c这张生成器卡的产物认不出来");
+                    return;
+                }
+            } else {
+                SlimefunItem sf = MachineUtil.machineIn(tool);
+                st.cardMode = false;
+                if (sf == null) {
                 if (st.machineId != null) {
                     st.reset();
                     MachineUtil.unset(loc, KEY_MACHINE);
                 }
                 st.blockedUntil = st.ticks + idleSkip;
                 boolean blank = tool == null || tool.getType().isAir();
-                render(menu, blank ? "§7识别槽空着 · 把要扫描的机器放进去"
-                        : "§c识别槽里不是粘液物品");
+                render(menu, blank ? "§7识别槽空着 · 把要扫描的机器放进来看它能不能无限产"
+                        : "§c识别槽里不是粘液物品，也不是生成器卡");
                 return;
             }
-            boolean[] mixed = new boolean[1];
-            st.count = countMachines(menu, sf, mixed);
-            st.mixedMachines = mixed[0];
-            if (!sf.getId().equals(st.machineId)) {
-                st.machineId = sf.getId();
-                st.machineName = nameOf(sf);
-                st.multiblock = RecipeScanner.skippedAsMultiblock(sf);
-                st.scans = scansFor(sf);
-                st.acc[0] = 0;
-                MachineUtil.set(loc, KEY_MACHINE, sf.getId());
+                boolean[] mixed = new boolean[1];
+                st.count = countMachines(menu, sf, mixed);
+                st.mixedMachines = mixed[0];
+                if (!sf.getId().equals(st.machineId)) {
+                    st.machineId = sf.getId();
+                    st.machineName = nameOf(sf);
+                    st.multiblock = RecipeScanner.skippedAsMultiblock(sf);
+                    st.sf = sf;
+                    st.chamber = MachineWhitelist.isSimChamber(sf);
+                    st.selfOut = MachineWhitelist.isSelfOutput(sf);
+                    st.chamberTicks = st.chamber ? MachineWhitelist.chamberTicks(sf) : 0;
+                    st.chipSig = null;
+                    st.limit = 0;
+                    st.scans = st.chamber ? List.of() : scansFor(sf);
+                    st.acc[0] = 0;
+                    MachineUtil.set(loc, KEY_MACHINE, sf.getId());
+                }
+            }
+            // ---- 名单机器（生物模拟室）：配方扫不到，产出由芯片掉落表决定 ----
+            if (st.chamber && !st.cardMode) {
+                MachineWhitelist.Chip chip = MachineWhitelist.findChip(menu, templateSlots(), TankNet.around(b, false));
+                if (chip == null) {
+                    st.scans = List.of();
+                    st.limit = 0;
+                    st.chipSig = null;
+                    st.blockedUntil = st.ticks + idleSkip;
+                    render(menu, "§c" + (st.machineName == null ? "这台机器" : st.machineName)
+                            + " §c要靠生物芯片决定产出 §7· 把芯片放进模板区或输入储罐");
+                    return;
+                }
+                if (!chip.signature().equals(st.chipSig)) {
+                    st.chipSig = chip.signature();
+                    Scan cardScan = MachineWhitelist.chipScan(chip, st.chamberTicks, cardEnergy(cfg));
+                    st.scans = cardScan == null ? List.of() : List.of(cardScan);
+                    st.acc[0] = 0;
+                }
+                st.limit = chip.count;
+            }
+            // ---- 自输出机器（A=A）：模板区放什么就产什么（动力科技蜂箱这类） ----
+            if (st.selfOut && !st.cardMode) {
+                Map<ItemKey, Integer> tpl = templateCounts(menu);
+                for (Map.Entry<ItemKey, Integer> e : TankNet.contents(TankNet.around(b, false)).entrySet()) {
+                    tpl.merge(e.getKey(), e.getValue(), Integer::sum);
+                }
+                List<Scan> built = new java.util.ArrayList<>();
+                StringBuilder sig = new StringBuilder();
+                int total = 0;
+                for (Map.Entry<ItemKey, Integer> e : tpl.entrySet()) {
+                    ItemStack rep = e.getKey().toTemplate();
+                    if (rep == null) continue;
+                    Scan sc = MachineWhitelist.selfOutputScan(rep, st.sf);
+                    if (sc == null) continue;
+                    built.add(sc);
+                    total += e.getValue();
+                    sig.append(e.getKey()).append('x').append(e.getValue()).append(';');
+                }
+                if (built.isEmpty()) {
+                    st.scans = List.of();
+                    st.chipSig = null;
+                    st.limit = 0;
+                    st.blockedUntil = st.ticks + idleSkip;
+                    render(menu, "§c" + (st.machineName == null ? "这台机器" : st.machineName)
+                            + " §c按放进去的物品出东西 §7· 把要产的东西放进模板区或输入储罐");
+                    return;
+                }
+                if (!sig.toString().equals(st.chipSig)) {
+                    st.chipSig = sig.toString();
+                    st.scans = built;
+                    st.acc[0] = 0;
+                }
+                st.limit = total;
             }
         }
         if (st.blockedUntil > st.ticks) return;
@@ -210,13 +324,20 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
         double eff = cfg == null ? 1.0 : cfg.baseEfficiency();
         int cap = cfg == null ? 256 : cfg.maxCraftsPerTick();
 
-        // 模板机的「模板越多跑得越快」：模板区放 N 个 ⇒ 进度每 tick 走 N 格（RSC fasterIfMoreTemplates）
-        int tplCount = 1;
-        if (chosen.template != null) {
-            ItemKey tk = ItemKey.of(chosen.template);
-            if (tk != null) tplCount = Math.max(1, templates.getOrDefault(tk, 1));
+        // 腐竹 2026-11-17：「模板数决定使用的机器数量」—— 一份模板带一台机器，模板不够就只有那么多台在跑
+        int runCount = st.count;
+        if (!chosen.need.isEmpty()) {
+            int copies = Integer.MAX_VALUE;
+            for (java.util.Map.Entry<ItemKey, Integer> en : chosen.need.entrySet()) {
+                int have = templates.getOrDefault(en.getKey(), 0) / Math.max(1, en.getValue());
+                copies = Math.min(copies, have);
+            }
+            if (copies != Integer.MAX_VALUE) runCount = Math.min(runCount, copies);
+            if (runCount < 1) runCount = 1;
         }
-        int ticks = chosen.fasterByTemplate ? Math.max(1, chosen.ticks / tplCount) : chosen.ticks;
+        // 一张芯片带一台机器（和「模板数决定台数」同一口径）
+        if (st.limit > 0) runCount = Math.max(1, Math.min(runCount, st.limit));
+        int ticks = chosen.ticks;
 
         int bySpace = chosen.uncertainOutput()
                 ? (int) Math.min(Integer.MAX_VALUE, room)   // 每次只出 1 件，空位够就有多少次
@@ -228,7 +349,7 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
         }
 
         // 电按 tick 扣（腐竹 2026-11-07）：缓冲只要装得下「1 tick 的电」，不再要求攒够整次配方
-        long draw = CraftMath.energyPerTick(chosen, st.count, eff);
+        long draw = CraftMath.energyPerTick(chosen, runCount, eff);
         if (draw > 0) {
             if (draw > getCapacity()) {
                 st.blockedUntil = st.ticks + Math.max(1, idleSkip);
@@ -245,10 +366,10 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
             consumeCharge(loc, draw);
         }
 
-        int crafts = CraftMath.perTick(st.acc, st.count, eff, ticks, cap);
+        int crafts = CraftMath.perTick(st.acc, runCount, eff, ticks, cap);
         if (crafts <= 0) {
             if (st.ticks % 10 == 0) {
-                render(menu, "§7蓄力中 §8(" + st.count + "台 / " + ticks + "tick)");
+                render(menu, "§7蓄力中 §8(" + runCount + "台 / " + ticks + "tick)");
             }
             return;
         }
@@ -259,7 +380,7 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
             return;
         }
         if (st.ticks % 10 == 0) {
-            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + st.count + "台, " + ticks
+            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + runCount + "台, " + ticks
                     + "tick, 每tick " + draw + " J" + (chosen.energyKnown ? "" : " §c能耗未知") + "§8)"
                     + (st.mixedMachines ? " §c· 附加槽里不是同款机器" : ""));
         }
@@ -327,6 +448,21 @@ public final class KnowledgeGenerator extends BaseKnowledgeMachine {
                 : s.chanced()
                 ? InvOps.produceChanced(menu, outputSlots(), s.outputs, s.chances, s.chanceChooseOne, times)
                 : InvOps.produceMixed(menu, outputSlots(), s.outputs, times);
+    }
+
+    private static int cardEnergy(Settings cfg) {
+        return cfg == null ? 20 : cfg.cardEnergyPerTick();
+    }
+
+    /** 机器槽 + 附加槽里所有生成器卡「每个间隔合计产多少个」 */
+    private int cardCount(BlockMenu menu) {
+        int total = 0;
+        for (int s : machineSlots()) {
+            ItemStack it = menu.getItemInSlot(s);
+            if (!GeneratorCard.isCard(it)) continue;
+            total += Math.max(1, it.getAmount()) * GeneratorCard.count(it);
+        }
+        return Math.max(1, total);
     }
 
     private long charge(Location loc) {
