@@ -186,11 +186,25 @@ public final class TankNet {
      * @return 补进去的件数
      */
     public static int refill(BlockMenu menu, int[] slots, List<BlockMenu> tanks) {
+        return refill(menu, slots, tanks, null);
+    }
+
+    /**
+     * 带「允许清单」的补料：只从储罐里拿这台机器配方用得上的东西。
+     *
+     * <p>腐竹 2026-11-18 报「奇点的配方要求材料很多，但好像没识别到输入桶的」：
+     * 原来的 refill 只补「格子里已经躺着的那种物品」，空着的格子永远喂不进去，
+     * 而奇点这类大配方一次要几十种材料 —— 必须按配方需求把空槽也填上。
+     *
+     * @param allowed 允许从储罐搬进机器的物品（null = 不限，只补已有物品）
+     */
+    public static int refill(BlockMenu menu, int[] slots, List<BlockMenu> tanks, java.util.Set<ItemKey> allowed) {
         if (tanks == null || tanks.isEmpty() || slots == null) return 0;
         int moved = 0;
         for (int s : slots) {
             ItemStack it = menu.getItemInSlot(s);
             if (it == null || it.getType().isAir()) continue;
+            if (allowed != null && !allowed.contains(ItemKey.of(it))) continue;
             int room = Math.max(0, it.getMaxStackSize() - it.getAmount());
             if (room <= 0) continue;
             for (BlockMenu tank : tanks) {
@@ -203,6 +217,39 @@ public final class TankNet {
                     moved += take;
                 }
                 if (room <= 0) break;
+            }
+        }
+        if (allowed == null) return moved;
+
+        // 第二遍：把空槽也按配方需求填上（每种一格，机器里已有的种类不重复占格）
+        java.util.Set<ItemKey> present = new java.util.HashSet<>();
+        for (int s : slots) {
+            ItemStack it = menu.getItemInSlot(s);
+            if (it == null || it.getType().isAir()) continue;
+            ItemKey k = ItemKey.of(it);
+            if (k != null) present.add(k);
+        }
+        for (int s : slots) {
+            ItemStack it = menu.getItemInSlot(s);
+            if (it != null && !it.getType().isAir()) continue;
+            for (BlockMenu tank : tanks) {
+                boolean filled = false;
+                for (int i = 0; i < SLOTS; i++) {
+                    ItemStack src = tank.getItemInSlot(i);
+                    if (src == null || src.getType().isAir()) continue;
+                    ItemKey k = ItemKey.of(src);
+                    if (k == null || !allowed.contains(k) || present.contains(k)) continue;
+                    int take = withdraw(tank, src, Math.max(1, src.getMaxStackSize()));
+                    if (take <= 0) continue;
+                    ItemStack put = src.clone();
+                    put.setAmount(take);
+                    menu.replaceExistingItem(s, put);
+                    present.add(k);
+                    moved += take;
+                    filled = true;
+                    break;
+                }
+                if (filled) break;
             }
         }
         return moved;

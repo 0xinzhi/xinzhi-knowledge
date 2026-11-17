@@ -152,8 +152,8 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
 
     @Override
     protected void tick(Block b, BlockMenu menu) {
-        // 储罐：输入格先从输入罐补满，产物扫进输出罐（腐竹 2026-11-16：「也接上」）
-        TankNet.refill(menu, inputSlots(), TankNet.around(b, false));
+        // 储罐：产物扫进输出罐（腐竹 2026-11-16：「也接上」）；
+        // 输入格等认出配方后再补 —— 只搬这台机器用得到的料，空槽也填（腐竹 2026-11-18 奇点那条）
         TankNet.sweep(menu, outputSlots(), TankNet.around(b, true));
         Location loc = b.getLocation();
         State st = states.computeIfAbsent(loc, k -> new State());
@@ -196,6 +196,14 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
                 st.lockedAt = 0;
             }
         }
+        // 按配方需求从输入罐补料：所有能跑的配方用得上的物品才搬（不搬罐里的杂物），空槽也填
+        if (!st.scans.isEmpty() && st.ticks % 4 == 0) {
+            java.util.Set<ItemKey> allowed = new java.util.HashSet<>();
+            for (Scan sc : st.scans) {
+                if (sc.need != null) allowed.addAll(sc.need.keySet());
+            }
+            if (!allowed.isEmpty()) TankNet.refill(menu, inputSlots(), TankNet.around(b, false), allowed);
+        }
         if (st.blockedUntil > st.ticks) return;
         if (st.scans.isEmpty()) {
             st.blockedUntil = st.ticks + idleSkip;
@@ -231,7 +239,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             render(menu, "§c锁定的配方已不在这台机器的列表里 §7(换过机器或重载过) §8· 点配方格重新选");
             return;
         } else {
-            have = InvOps.count(menu, inputSlots());
+            have = withTanks(InvOps.count(menu, inputSlots()), b);
             chosen = autoMatch(have, st.scans);
         }
         if (chosen == null) {
@@ -241,7 +249,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             return;
         }
 
-        if (have == null) have = InvOps.count(menu, inputSlots());
+        if (have == null) have = withTanks(InvOps.count(menu, inputSlots()), b);
         int byIn = CraftMath.byInput(have, chosen.need);
         int bySpace = chosen.uncertainOutput()
                 ? (int) Math.min(Integer.MAX_VALUE, InvOps.roomFor(menu, outputSlots()))   // 每次只出 1 件
@@ -284,7 +292,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             return;
         }
 
-        InvOps.consume(menu, inputSlots(), chosen.cost, crafts);
+        consumeWithTanks(menu, b, chosen.cost, crafts);
         boolean placed = true;
         if (chosen.grouped()) {
             placed = InvOps.produceGrouped(menu, outputSlots(), chosen.groups, chosen.groupWeights, crafts);
@@ -308,6 +316,38 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
                     + "tick, 每tick " + draw + " J" + (chosen.energyKnown ? "" : " §c能耗未知") + "§8)"
                     + (st.mixedMachines ? " §c· 附加槽里不是同款机器" : ""));
         }
+    }
+
+    /** 机器输入格 + 输入储罐的库存合并统计（腐竹 2026-11-18：「奇点配方材料很多，没识别到输入桶的」） */
+    private Map<ItemKey, Integer> withTanks(Map<ItemKey, Integer> base, Block b) {
+        Map<ItemKey, Integer> out = new java.util.HashMap<>(base);
+        for (Map.Entry<ItemKey, Integer> e : TankNet.contents(TankNet.around(b, false)).entrySet()) {
+            out.merge(e.getKey(), e.getValue(), Integer::sum);
+        }
+        return out;
+    }
+
+    /** 扣料：先用输入储罐的（腐竹 2026-11-16「先用储罐的」），不够再从机器输入格扣 */
+    private void consumeWithTanks(BlockMenu menu, Block b, Map<ItemKey, Integer> need, int crafts) {
+        if (need == null || need.isEmpty()) return;
+        Map<ItemKey, Integer> left = new java.util.HashMap<>();
+        for (Map.Entry<ItemKey, Integer> e : need.entrySet()) {
+            left.put(e.getKey(), e.getValue() * crafts);
+        }
+        List<BlockMenu> tanks = TankNet.around(b, false);
+        for (Map.Entry<ItemKey, Integer> e : need.entrySet()) {
+            Integer want = left.get(e.getKey());
+            if (want == null || want <= 0) continue;
+            int remaining = want;
+            for (BlockMenu tank : tanks) {
+                if (remaining <= 0) break;
+                int got = TankNet.withdraw(tank, e.getKey().toTemplate(), remaining);
+                if (got > 0) remaining -= got;
+            }
+            if (remaining <= 0) left.remove(e.getKey());
+            else left.put(e.getKey(), remaining);
+        }
+        if (!left.isEmpty()) InvOps.consume(menu, inputSlots(), left, 1);
     }
 
     private Scan autoMatch(Map<ItemKey, Integer> have, List<Scan> scans) {
