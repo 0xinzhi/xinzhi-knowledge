@@ -7,6 +7,7 @@ import io.github.thebusybiscuit.slimefun4.api.recipes.RecipeType;
 import io.github.thebusybiscuit.slimefun4.core.handlers.BlockPlaceHandler;
 import me.mrCookieSlime.Slimefun.api.inventory.BlockMenu;
 import net.me.xinzhi.knowledge.config.Settings;
+import net.me.xinzhi.knowledge.core.CycleRules;
 import net.me.xinzhi.knowledge.core.ItemKey;
 import net.me.xinzhi.knowledge.recipe.RecipeLock;
 import net.me.xinzhi.knowledge.recipe.RecipeScanner;
@@ -120,6 +121,8 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
 
     private static final class State {
         String machineId;
+        /** 识别槽里那台机器（算周期/名单用） */
+        SlimefunItem sf;
         /** 识别出来的机器中文名（状态卡用） */
         String machineName;
         /** 是不是多方块核心（界面要给出不同提示） */
@@ -139,6 +142,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
         boolean mixedMachines;
         void reset() {
             machineId = null;
+            sf = null;
             machineName = null;
             multiblock = false;
             scans = List.of();
@@ -186,6 +190,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
                 // 那时清锁等于把玩家选的配方白扔（腐竹 2026-11-15：怎么锁都跑第一条）
                 String stored = MachineUtil.info(loc, KEY_MACHINE);
                 st.machineId = sf.getId();
+                st.sf = sf;
                 st.machineName = nameOf(sf);
                 st.multiblock = RecipeScanner.skippedAsMultiblock(sf);
                 st.scans = scansFor(sf);
@@ -250,6 +255,8 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
         }
 
         if (have == null) have = withTanks(InvOps.count(menu, inputSlots()), b);
+        // 周期：普通机器默认 1000 tick、无尽 20 tick（cycles.yml 可改；腐竹 2026-11-18）
+        int cycle = CycleRules.ticksFor(st.sf, chosen.ticks);
         int byIn = CraftMath.byInput(have, chosen.need);
         int bySpace = chosen.uncertainOutput()
                 ? (int) Math.min(Integer.MAX_VALUE, InvOps.roomFor(menu, outputSlots()))   // 每次只出 1 件
@@ -263,7 +270,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
         // 电按 tick 扣，不是攒够一次才扣（腐竹 2026-11-07）：
         // 这台机器本 tick 要推进 count*eff 台机器的工作量，就付 count*eff 份「每 tick 耗电」。
         // 一次配方累计下来正好 = energyPerCraft，但缓冲只需要装得下「1 tick 的电」。
-        long draw = CraftMath.energyPerTick(chosen, st.count, eff);
+        long draw = CraftMath.energyPerTick(chosen, st.count, eff, cycle);
         if (draw > 0) {
             if (draw > getCapacity()) {
                 st.blockedUntil = st.ticks + Math.max(1, idleSkip);
@@ -282,12 +289,12 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
 
         // ⚠ 必须被「这 tick 的料够跑几次」「产物放得下几次」削顶，否则多台机器会
         // 按机器数放大产物却没跟上扣料（腐竹 2026-11-08：机器多了材料消耗没增加）
-        int crafts = Math.min(CraftMath.perTick(st.acc, st.count, eff, chosen.ticks, cap),
+        int crafts = Math.min(CraftMath.perTick(st.acc, st.count, eff, cycle, cap),
                 Math.min(byIn, bySpace));
         if (crafts <= 0) {
             // 蓄力中：每 tick 都要累加，只是别每 tick 都重画界面
             if (st.ticks % 10 == 0) {
-                render(menu, "§7蓄力中 §8(" + st.count + "台 / " + chosen.ticks + "tick)");
+                render(menu, "§7蓄力中 §8(" + st.count + "台 / " + cycle + "tick)");
             }
             return;
         }
@@ -312,7 +319,7 @@ public final class RecipeMachine extends BaseKnowledgeMachine {
             return;
         }
         if (st.ticks % 10 == 0) {
-            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + st.count + "台, " + chosen.ticks
+            render(menu, "§a运行中 §7· §f" + crafts + " §7次 §8(" + st.count + "台, " + cycle
                     + "tick, 每tick " + draw + " J" + (chosen.energyKnown ? "" : " §c能耗未知") + "§8)"
                     + (st.mixedMachines ? " §c· 附加槽里不是同款机器" : ""));
         }

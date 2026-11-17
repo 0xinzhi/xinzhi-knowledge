@@ -38,6 +38,7 @@ public final class MachineWhitelist {
 
     /** 这台机器是不是「名单识别」里的模拟室（无尽 / 逻辑各一台） */
     public static boolean isSimChamber(SlimefunItem sf) {
+        if (CycleRules.whitelisted(sf)) return true;
         String id = upperId(sf);
         return id.contains(INFINITY_CHAMBER) || id.contains(LOGITECH_MARK);
     }
@@ -164,6 +165,8 @@ public final class MachineWhitelist {
      */
     public static boolean isSelfOutput(SlimefunItem sf) {
         if (sf == null) return false;
+        // 腐竹自己在 cycles.yml 的 whitelist 里加进来的机器，一律按「自输出/模板驱动」识别
+        if (CycleRules.whitelisted(sf)) return true;
         String id = upperId(sf);
         if (id.contains("HIVE") || id.contains("APIARY")) return true;
         String cn = sf.getClass().getSimpleName();

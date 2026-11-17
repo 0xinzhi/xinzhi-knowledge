@@ -82,6 +82,7 @@ public final class XinZhiKnowledge extends JavaPlugin implements SlimefunAddon {
     public void onEnable() {
         saveDefaultConfig();
         Settings.set(new Settings(getConfig()));
+        net.me.xinzhi.knowledge.core.CycleRules.load(this);
         ItemNames.load(this);
         reloadBaseItems();
         startBaseItemProbe();
@@ -292,6 +293,7 @@ public final class XinZhiKnowledge extends JavaPlugin implements SlimefunAddon {
             }
             reloadConfig();
             Settings.set(new Settings(getConfig()));
+            net.me.xinzhi.knowledge.core.CycleRules.load(this);
             RecipeScanner.clearCache();
             reloadBaseItems();
             net.me.xinzhi.knowledge.util.Perf.reset();

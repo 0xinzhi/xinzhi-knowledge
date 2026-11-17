@@ -24,6 +24,17 @@ final class CraftMath {
         return Math.max(1L, (long) Math.ceil(v));
     }
 
+    /**
+     * 同 {@link #energyPerTick(Scan, int, double)}，但周期按 {@code cycleTicks} 算：
+     * 合成机把普通机器放慢到 1000 tick 时，一次配方的总耗电保持不变（腐竹 2026-11-18）。
+     */
+    static long energyPerTick(Scan s, int count, double eff, int cycleTicks) {
+        if (s.energyPerCraft <= 0) return 0;
+        int cycle = Math.max(1, cycleTicks);
+        double v = (double) s.energyPerCraft * Math.max(1, count) * Math.max(0.0, eff) / cycle;
+        return Math.max(1L, (long) Math.ceil(v));
+    }
+
     /** 按输入槽现有量，最多能做几次（至少 1 才能开工） */
     static int byInput(Map<ItemKey, Integer> have, Map<ItemKey, Integer> need) {
         if (need.isEmpty()) return Integer.MAX_VALUE;
